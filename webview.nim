@@ -1,9 +1,14 @@
 {.passC: "-DWEBVIEW_STATIC -DWEBVIEW_IMPLEMENTATION".}
 {.passC: "-I" & currentSourcePath().substr(0, high(currentSourcePath()) - 4) .}
 when defined(linux):
+  # Auto-detect webkit2gtk version (prefers 4.1, falls back to 4.0).
+  # Override at compile time with: -d:webkitPkg=webkit2gtk-4.0
+  const webkitPkg {.strdefine.}: string = staticExec(
+    "pkg-config --exists webkit2gtk-4.1 2>/dev/null && echo webkit2gtk-4.1 || echo webkit2gtk-4.0"
+  ).strip()
   {.passC: "-DWEBVIEW_GTK=1 " &
-          staticExec"pkg-config --cflags gtk+-3.0 webkit2gtk-4.0".}
-  {.passL: staticExec"pkg-config --libs gtk+-3.0 webkit2gtk-4.0".}
+          staticExec("pkg-config --cflags gtk+-3.0 " & webkitPkg).}
+  {.passL: staticExec("pkg-config --libs gtk+-3.0 " & webkitPkg).}
 elif defined(windows):
   {.passC: "-DWEBVIEW_WINAPI=1".}
   {.passL: "-lole32 -lcomctl32 -loleaut32 -luuid -lgdi32".}
