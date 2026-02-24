@@ -1,3 +1,5 @@
+import std / [tables, strutils, macros, json]
+
 {.passC: "-DWEBVIEW_STATIC -DWEBVIEW_IMPLEMENTATION".}
 {.passC: "-I" & currentSourcePath().substr(0, high(currentSourcePath()) - 4) .}
 when defined(linux):
@@ -6,9 +8,16 @@ when defined(linux):
   const webkitPkg {.strdefine.}: string = staticExec(
     "pkg-config --exists webkit2gtk-4.1 2>/dev/null && echo webkit2gtk-4.1 || echo webkit2gtk-4.0"
   ).strip()
+  const webkitPkgCheck = staticExec(
+    "pkg-config --exists " & webkitPkg & " 2>/dev/null && echo ok || echo missing"
+  ).strip()
+  when webkitPkgCheck != "ok":
+    {.error: "pkg-config cannot find '" & webkitPkg &
+      "'. Install the webkit2gtk dev package (e.g. libwebkit2gtk-4.1-dev) " &
+      "or set -d:webkitPkg=<name> to match your system.".}
   {.passC: "-DWEBVIEW_GTK=1 " &
-          staticExec("pkg-config --cflags gtk+-3.0 " & webkitPkg).}
-  {.passL: staticExec("pkg-config --libs gtk+-3.0 " & webkitPkg).}
+          staticExec("pkg-config --cflags gtk+-3.0 " & webkitPkg & " 2>/dev/null").}
+  {.passL: staticExec("pkg-config --libs gtk+-3.0 " & webkitPkg & " 2>/dev/null").}
 elif defined(windows):
   {.passC: "-DWEBVIEW_WINAPI=1".}
   {.passL: "-lole32 -lcomctl32 -loleaut32 -luuid -lgdi32".}
@@ -16,12 +25,8 @@ elif defined(macosx):
   {.passC: "-DWEBVIEW_COCOA=1 -x objective-c".}
   {.passL: "-framework Cocoa -framework WebKit".}
 
-import tables, strutils
-import macros
-import json
-
 ##
-## Hight level api and javascript bindings to easy bidirectonal 
+## Hight level api and javascript bindings to easy bidirectonal
 ## message passsing for ``nim`` and the ``webview`` .
 ##
 
@@ -42,7 +47,7 @@ type
 
   DialogType* {.size: sizeof(cint).} = enum
     dtOpen = 0, dtSave = 1, dtAlert = 2
-  
+
 const
   dFlagFile* = 0
   dFlagDir* = 1
@@ -50,10 +55,10 @@ const
   dFlagWarn* = 2 shl 1
   dFlagError* = 3 shl 1
   dFlagAlertMask* = 3 shl 1
-  
+
 type
   DispatchFn* = proc()
-  
+
 proc init*(w: Webview): cint {.importc: "webview_init", header: "webview.h".}
 proc loop*(w: Webview; blocking: cint): cint {.importc: "webview_loop", header: "webview.h".}
 proc eval*(w: Webview; js: cstring): cint {.importc: "webview_eval", header: "webview.h".}
@@ -61,7 +66,7 @@ proc injectCss*(w: Webview; css: cstring): cint {.importc: "webview_inject_css",
 proc setTitle*(w: Webview; title: cstring) {.importc: "webview_set_title", header: "webview.h".}
 proc setColor*(w: Webview; r,g,b,a: uint8) {.importc: "webview_set_color", header: "webview.h".}
 proc setFullscreen*(w: Webview; fullscreen: cint) {.importc: "webview_set_fullscreen", header: "webview.h".}
-proc dialog*(w: Webview; dlgtype: DialogType; flags: cint; title: cstring; arg: cstring; result: cstring; resultsz: csize) {.
+proc dialog*(w: Webview; dlgtype: DialogType; flags: cint; title: cstring; arg: cstring; result: cstring; resultsz: csize_t) {.
     importc: "webview_dialog", header: "webview.h".}
 proc dispatch(w: Webview; fn: pointer; arg: pointer) {.importc: "webview_dispatch", header: "webview.h".}
 proc terminate*(w: Webview) {.importc: "webview_terminate", header: "webview.h".}
@@ -94,7 +99,7 @@ proc generalExternalInvokeCallback(w: Webview, arg: cstring) {.exportc.} =
         handled = true
     except:
       echo getCurrentExceptionMsg()
-  elif cbs.hasKey(w): 
+  elif cbs.hasKey(w):
     cbs[w](w, $arg)
     handled = true
   if handled == false:
@@ -104,11 +109,11 @@ proc `externalInvokeCB=`*(w: Webview, cb: ExternalInvokeCb)=
   ## Set external invoke callback for webview
   cbs[w] = cb
 
-proc newWebView*(title="WebView", url="", 
-                 width=640, height=480, 
+proc newWebView*(title="WebView", url="",
+                 width=640, height=480,
                  resizable=true, debug=false,
                  cb:ExternalInvokeCb=nil): Webview =
-  ## ``newWebView`` creates and opens a new webview window using the given settings. 
+  ## ``newWebView`` creates and opens a new webview window using the given settings.
   ## This function will do webview ``init``
   var w = cast[Webview](alloc0(sizeof(WebviewObj)))
   w.title = title
@@ -144,7 +149,7 @@ proc dialog*(w :Webview, dlgType: DialogType, dlgFlag: int, title, arg: string):
   let maxPath = 4096
   let resultPtr = cast[cstring](alloc0(maxPath))
   defer: dealloc(resultPtr)
-  w.dialog(dlgType, dlgFlag.cint, title.cstring, arg.cstring, resultPtr, maxPath.csize) 
+  w.dialog(dlgType, dlgFlag.cint, title.cstring, arg.cstring, resultPtr, maxPath.csize_t)
   return $resultPtr
 
 proc msg*(w: Webview, title, msg: string) =
@@ -165,7 +170,7 @@ proc error*(w: Webview, title, msg: string) =
 
 proc dialogOpen*(w: Webview, title="Open File", flag=dFlagFile): string =
   ## Opens a dialog that requests filenames from the user. Returns ""
-  ## if the user closed the dialog without selecting a file. 
+  ## if the user closed the dialog without selecting a file.
   return w.dialog(dtOpen, flag, title, "")
 
 proc dialogSave*(w: Webview, title="Save File", flag=dFlagFile): string =
@@ -235,7 +240,7 @@ $2.$1 = function() {
 
 proc bindProc*[P, R](w: Webview, scope, name: string, p: (proc(param: P): R)) =
   proc hook(hookParam: string): string =
-    var 
+    var
       paramVal: P
       retVal: R
     try:
@@ -261,11 +266,11 @@ proc bindProcNoArg*(w: Webview, scope, name: string, p: proc()) =
   discard hasKeyOrPut(eps[w], scope, newTable[string, CallHook]())
   eps[w][scope][name] = hook
   # TODO eval jscode
-  w.dispatch(proc() = discard w.eval(jsTemplateNoArg%[name, scope]))
+  w.dispatch(proc() = discard w.eval(cstring(jsTemplateNoArg%[name, scope])))
 
 proc bindProc*[P](w: Webview, scope, name: string, p: proc(arg:P)) =
   proc hook(hookParam: string): string =
-    var 
+    var
       paramVal: P
     try:
       let jnode = parseJson(hookParam)
@@ -275,7 +280,7 @@ proc bindProc*[P](w: Webview, scope, name: string, p: proc(arg:P)) =
     p(paramVal)
     return ""
   discard eps.hasKeyOrPut(w, newTable[string, TableRef[string, CallHook]]())
-  discard hasKeyOrPut(eps[w], scope, newTable[string, CallHook]()) 
+  discard hasKeyOrPut(eps[w], scope, newTable[string, CallHook]())
   eps[w][scope][name] = hook
   # TODO eval jscode
   w.dispatch(proc() = discard w.eval(jsTemplateOnlyArg%[name, scope]))
@@ -284,7 +289,7 @@ macro bindProcs*(w: Webview, scope: string, n: untyped): untyped =
   ## bind procs like:
   ##
   ## .. code-block:: nim
-  ## 
+  ##
   ##    proc fn[T, U](arg: T): U
   ##    proc fn[T](arg: T)
   ##    proc fn()
@@ -293,7 +298,7 @@ macro bindProcs*(w: Webview, scope: string, n: untyped): untyped =
   ## then you can invode in js side, like this:
   ##
   ## .. code-block:: js
-  ## 
+  ##
   ##    scope.fn(arg)
   ##
   expectKind(n, nnkStmtList)
@@ -305,12 +310,12 @@ macro bindProcs*(w: Webview, scope: string, n: untyped): untyped =
     # expectKind(params[0], nnkSym)
     if params.len() == 1 and params[0].kind() == nnkEmpty: # no args
       body.add(newCall("bindProcNoArg", w, scope, newLit(fname), newIdentNode(fname)))
-      continue 
+      continue
     if params.len() > 2 :
-      error("""only proc like `proc fn[T, U](arg: T): U` or 
-              `proc fn[T](arg: T)` or 
+      error("""only proc like `proc fn[T, U](arg: T): U` or
+              `proc fn[T](arg: T)` or
               `proc()`
-            is allowed""", 
+            is allowed""",
             def)
     body.add(newCall("bindProc", w, scope, newLit(fname), newIdentNode(fname)))
   result = newBlockStmt(body)
